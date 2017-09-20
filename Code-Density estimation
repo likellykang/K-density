@@ -1,0 +1,124 @@
+
+## Reguired package: 
+# truncdist
+# coda
+# pracma
+# nlme
+
+#################################
+## Gibbs Sampling 
+#################################
+
+### Calculate pdf ### 
+get_pdf <- function(y, beta, alpha, lambda){
+  r<-pmax(-y*exp(lambda), y*exp(-lambda))
+  f_y <- beta/(cosh(lambda)*2*(alpha-1))*(1-pgamma(r, shape = alpha-1, rate = beta))
+  return(f_y)
+}
+### update ti ####
+update.t<-function(mydata, alpha, beta, lambda){
+  t<-numeric()
+  r<-pmax(-mydata*exp(lambda), mydata*exp(-lambda))
+  for (i in 1:length(mydata)){
+    if(r[i]<20){
+      t[i]<-rtrunc(1, spec="gamma", a = r[i], b = Inf,shape=alpha-1,rate=beta)
+    }else{
+      t[i]<-rexp(1, rate=beta)/beta+r[i]
+    }
+  }
+  return(t)
+}
+### update beta ####
+update.beta<-function(mydata, t, c, d, alpha){
+  n=length(mydata)
+  shape=n*alpha+c
+  rate=d+sum(t)
+  beta.new<-rgamma(1, shape,rate)
+  return(beta.new)
+}
+
+### update lambda ####
+logdposteior.lambda<-function(mydata,lambda){
+  n<-length(mydata)
+  logdpost<-n*log(1/(cosh(lambda)))
+  return(logdpost)
+} 
+
+update.lambda.MH<-function(mydata,lambda,alpha,beta,t,iteration){
+  n<-length(mydata)
+  k<-numeric()
+  l<-numeric()
+  chain1<-numeric()
+  chain1[1]<-lambda
+  for(i in 1:n){
+    if (mydata[i] > 0){
+      k[i]<- -log(t[i]/mydata[i])
+      l[i]<-NA
+    } else if (mydata[i] == 0) {
+      k[i]<- NA
+      l[i]<-NA
+    } else { 
+      l[i]<- log(-t[i]/mydata[i])
+      k[i]<-NA
+    }
+  }
+  K<-max(k,na.rm=TRUE)
+  L<-min(l,na.rm=TRUE)
+  for (i in 1:iteration){
+    proposal1<-runif(1, min=K,max=L) 
+    prob1<-logdposteior.lambda(mydata,proposal1)-logdposteior.lambda(mydata,chain1[i])
+    if (log(runif(1)) < prob1){
+      chain1[i+1] = proposal1
+    } else {chain1[i+1] = chain1[i]}
+  }
+  return(chain1)
+}
+
+### update alpha ####
+
+logdposteior.alpha<-function(alpha, m, q, beta, t,n){
+  dprior.alpha<-dtrunc(alpha, spec="gamma", a = 1, b = Inf,shape=m,rate=q)
+  logdpos<-log(dprior.alpha)+n*alpha*log(beta)-n*log(gamma(alpha))+(alpha-2)*sum(log(t))
+  return(logdpos)
+}
+update.alpha.MH<-function(mydata,alpha,m,q,std,beta,t,iteration){
+  n<-length(mydata)
+  chain<-numeric()
+  chain[1]<-alpha
+  for (i in 1:iteration){
+    proposal<-rtrunc(1, spec="norm", a =1, b = Inf,mean=chain[i], sd=std) ## proposal from truncated normal
+    prob<-logdposteior.alpha(proposal, m, q, beta, t,n)-logdposteior.alpha(chain[i], m, q, beta, t,n)+ log(dtrunc( proposal, spec="norm", a = 1, b = Inf,mean=chain[i], sd=std)) - log(dtrunc(chain[i], spec="norm", a = 1, b = Inf,mean=proposal, sd=std))  
+    if (log(runif(1)) < prob){
+      chain[i+1] = proposal
+    } else {chain[i+1] = chain[i]}
+  }
+  return(chain)
+}
+
+
+#### Gibbs #####
+
+Gibbs<-function(mydata,alpha,m,q,std,beta,lambda,c,d,v,iter,iteration){
+  ## initial value ##
+  beta.array<-numeric()
+  alpha.array<-numeric()
+  lambda.array<-numeric()
+  beta.array[1]=beta
+  alpha.array[1]=alpha
+  lambda.array[1]=lambda
+  for (j in 2:iteration){
+    ## update t
+    t<-update.t(mydata, alpha.array[j-1], beta.array[j-1], lambda.array[j-1])
+    ## update beta 
+    beta.array[j]<-update.beta(mydata, t, c, d, alpha.array[j-1])
+    ## update alpha
+    alpha.array[j]<-update.alpha.MH(mydata,alpha.array[j-1],m,q,std,beta.array[j],t,iter)[iter+1]
+    ## update lambda 
+    lambda.array[j]<-update.lambda.MH(mydata,lambda.array[j-1],alpha.array[j-1],beta.array[j],t,iter)[iter+1]
+
+  }
+  return(list(beta.array,alpha.array,lambda.array))
+}
+
+
+
