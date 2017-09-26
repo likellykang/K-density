@@ -1,0 +1,348 @@
+rm(list=ls())
+library(coda)
+library(truncdist)
+
+return<-read.csv("Zhu.csv",header=T)
+Y<-return$Return.on.the.S.P.500.Index
+
+hist(Y,breaks = 30, freq=F)
+
+
+## update t #########
+logdposteior.t<-function(t, r,alpha, beta){
+  log.pt<-(alpha-2)*log(t)-t*beta
+  return(log.pt)
+}
+
+MH_t<-function(t, r, alpha, beta, Ulimit){
+    proposal<-runif(1, r,Ulimit)
+    probt<-logdposteior.t(proposal, r,alpha, beta)-logdposteior.t(t, r,alpha, beta)
+    if (log(runif(1)) < probt){
+      return(proposal)
+    } else {return(t)}
+}
+
+update.t<-function(mydata, alpha, lambda,sigma, m){
+  ## sigma is a T*1 vector, same length with mydata ##
+  ts<-numeric()
+  k<-length(mydata)
+  r<-pmax(-(mydata-m)/sigma*exp(lambda), (mydata-m)/sigma*exp(-lambda))
+  #t<-r+1
+  bt<-sqrt(alpha*(alpha+1)/3)
+  #t<-rtrunc(k, spec = "gamma", r, b=Inf, shape=alpha-1, rate=bt)
+  #print(r)
+  #print(min(r))
+  #print(max(r))
+  #Ulimit<-max(t)+5
+  for (i in 1:k){
+   #ts[i]<- MH_t(t[i],r[i],alpha-1, bt, Ulimit)
+   ts[i]<-rtrunc(1, spec = "gamma", r[i], b=Inf, shape=alpha-1, rate=bt)
+   #print(ts[i])
+  }
+  return(ts)
+}
+
+## update alpha ######
+logdposteior.alpha<-function(alpha, m, q, t,n){
+  dprior.alpha<-dtrunc(alpha, spec="gamma", a = 1, b = Inf,shape=m,rate=q)
+  bt<-sqrt(alpha*(alpha+1)/3)
+  logdpos<-log(dprior.alpha)+n*alpha*log(bt)-n*log(gamma(alpha))-bt*sum(t)+(alpha-2)*sum(log(t))
+  return(logdpos)
+}
+
+#update.alpha.MH(Y,3,2,2,1,t)
+update.alpha.MH<-function(mydata,alpha,ma,q,std,t){
+  n<-length(mydata)
+  chain<-alpha
+  proposal<-rtrunc(1, spec="norm", a =1, b = Inf,mean=chain, sd=std)
+  #print(proposal)## proposal from truncated normal
+  proba<-logdposteior.alpha(proposal, ma, q, t,n)-logdposteior.alpha(chain, ma, q, t,n)-log(dtrunc( proposal, spec="norm", a = 1, b = Inf,mean=chain, sd=std)) +log(dtrunc(chain, spec="norm", a = 1, b = Inf,mean=proposal, sd=std))  
+  #print(proba)
+  if (log(runif(1)) < proba){
+    chain = proposal
+  } else {chain= chain}
+  return(chain)
+}
+
+#update.alpha.MH(Y,2.49,2,2,0.1,2.67,t)
+## update lambda #####
+
+logdposteior.lambda<-function(mydata,lambda){
+  n<-length(mydata)
+  logdpost<-n*log(1/(cosh(lambda)))
+  return(logdpost)
+} 
+
+update.lambda.MH<-function(mydata,lambda,t,sigma,m,Llow,Lup){
+  n<-length(mydata)
+  k<-numeric()
+  l<-numeric()
+  chain1<-lambda
+  cp<-(mydata-m)/sigma
+  for(i in 1:n){
+    if (cp[i] > 0){
+      k[i]<- -log(sigma[i]*t[i]/(mydata[i]-m))
+      l[i]<-NA
+    } else if (cp[i] == 0) {
+      k[i]<- NA
+      l[i]<-NA
+    } else { 
+      l[i]<- log(-t[i]*sigma[i]/(mydata[i]-m))
+      #print(t[i])
+      #print(sigma[i])
+      #print(mydata[i])
+      #print(l[i])
+      k[i]<- NA
+    }
+  }
+  K<-max(k,na.rm=TRUE)
+  L<-min(l,na.rm=TRUE)
+  #print(L)
+  proposal1<-runif(1, min=K,max=L) 
+  #print(proposal1)
+  prob1<-logdposteior.lambda(mydata,proposal1)-logdposteior.lambda(mydata,chain1)
+  #print(prob1)
+  if (log(runif(1)) < prob1){
+    chain1 = proposal1
+  } else {chain1 = chain1}
+  return(chain1)
+}
+
+
+## Get f(r) ##########
+get_pdf.Garch <- function(y, beta, alpha, lambda, sigma, m){
+  r<-pmax(-(y-m)/sigma*exp(lambda), (y-m)/sigma*exp(-lambda))
+  f_y <- beta/(cosh(lambda)*2*(alpha-1)*abs(sigma))*(1-pgamma(r, shape = alpha-1, rate = beta))
+  return(f_y)
+}
+## get sigma
+get.sigma<-function(sigma20,b0,b1,b2,Y, m,c){
+  sigma2<-numeric()
+  sigma2[1]<-sigma20
+  for (i in 1:length(Y)){
+    sigma2[i+1]<-b0+b1*sigma2[i]+b2*(Y[i]-m-c*sigma2[i])^2
+  }
+  return(sigma2[2:(length(Y)+1)])
+}
+
+#sgm<-get.sigma(0,0.1,0.4,0.5,Y, 0.004,0.5)
+#sqrt(sgm)
+
+## update b0
+logdposteior.b0<-function(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c){
+  st<-get.sigma(sigma20,b0,b1,b2,Y, m,c)
+  fy<-get_pdf.Garch(Y, beta, alpha, lambda, sqrt(st), m) ## lik
+  #d1<-1/b0    ## prior
+  #logdpost<-sum(log(fy))+log(d1)
+  logdpost<-sum(log(fy))
+  return(logdpost)
+} 
+
+update.b0.MH<-function(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c, sigma.b0){
+  n<-length(Y)
+  #proposal<-rtrunc(1, spec="norm", a = 0, b = Inf,mean=b0, sd=sigma.b0)
+ # proposal<-rnorm(1, mean = b0, sd=sigma.b0)
+  proposal<-runif(1, 0.005, 0.006)
+  #print(proposal)
+  probb0<-logdposteior.b0(Y,alpha,lambda,beta,sigma20,proposal,b1,b2, m,c)-logdposteior.b0(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c)   ## Random Walk Transection Kernel 
+  #print(prob)
+  if (log(runif(1)) < probb0){
+    chain = proposal
+  } else {chain= b0}
+  return(chain)
+}
+#update.b0.MH(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c, sigma.b0)
+
+## update c
+logdposteior.c<-function(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c){ 
+  st<-get.sigma(sigma20,b0,b1,b2,Y, m,c)
+  fy<-get_pdf.Garch(Y, beta, alpha, lambda, sqrt(st), m) ## lik
+  #d1<-1/2   ## prior
+  logdpost<-sum(log(fy))
+  return(logdpost)
+}  
+
+update.c.MH<-function(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c){
+  n<-length(Y)
+  proposal<-runif(1, min=0, max=1)
+  probc<-logdposteior.c(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,proposal)-logdposteior.c(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c)   ## Random Walk Transection Kernel 
+  if (log(runif(1)) < probc){
+    chain = proposal
+  } else {chain= c}
+  return(chain)
+}
+
+## update m
+
+logdposteior.m<-function(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c){ 
+  st<-get.sigma(sigma20,b0,b1,b2,Y, m,c)
+  fy<-get_pdf.Garch(Y, beta, alpha, lambda, sqrt(st), m) ## lik
+  #d1<-1/(max(Y)-min(Y))  ## prior
+  #logdpost<-sum(log(fy))+log(d1)
+  logdpost<-sum(log(fy))
+  return(logdpost)
+}  
+
+update.m.MH<-function(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c){
+  n<-length(Y)
+  proposal<-runif(1, 0, 0.01)
+  probm<-logdposteior.m(Y,alpha,lambda,beta,sigma20,b0,b1,b2,proposal,c)-logdposteior.m(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c)   ## Random Walk Transection Kernel 
+  if (log(runif(1)) < probm){
+    chain = proposal
+  } else {chain= m}
+  return(chain)
+}
+
+#update.m.MH(Y,3,0,2,0,b0,b1,b2, m,c)
+## update b1 b2
+
+
+logdposteior.b12<-function(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c){
+  st<-get.sigma(sigma20,b0,b1,b2,Y, m,c)
+  fy<-get_pdf.Garch(Y, beta, alpha, lambda, sqrt(st), m) ## lik
+  logdpost<-sum(log(fy))
+  return(logdpost)
+} 
+
+update.b12.MH<-function(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c){
+  n<-length(Y)
+    proposal.b1<-runif(1, 0, 0.2)
+    probb12<-logdposteior.b12(Y,alpha,lambda,beta,sigma20,b0,proposal.b1,b2,m,c)-logdposteior.b12(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c)   ## Random Walk Transection Kernel 
+    if (log(runif(1)) < probb12){
+      chain.b1 = proposal.b1
+    } else {chain.b1 = b1}
+    
+    proposal.b2<-runif(1, 0, (1-chain.b1))
+    prob2<-logdposteior.b12(Y,alpha,lambda,beta,sigma20,b0,chain.b1,proposal.b2,m,c)-logdposteior.b12(Y,alpha,lambda,beta,sigma20,b0,chain.b1,b2, m,c)   ## Random Walk Transection Kernel 
+    if (log(runif(1)) < prob2){
+      chain.b2 = proposal.b2
+    } else {chain.b2 = b2}
+
+  return(c(chain.b1,chain.b2))
+}
+
+#update.b12.MH(Y,alpha,lambda,beta,sigma20,b0,b1,b2, m,c)
+
+
+MCMC.Garch<-function(Y,alpha,lambda,ma,q,std,cb,d,Llow,Lup,sigma20,sigma.b0,b0,b1,b2, m,c, iteration,tms){
+  ## initial data structure
+  T<-length(Y)
+  #beta.array<-numeric()
+  alpha.array<-numeric()
+  lambda.array<-numeric()
+  m.array<-numeric()
+  c.array<-numeric()
+  b1.array<-numeric()
+  b2.array<-numeric()
+  b0.array<-numeric()
+  sigma.M<-matrix(0, T, iteration)
+  t.M<-matrix(0, T, iteration)
+  ## initial value 
+  #beta.array[1]<-beta
+  alpha.array[1]<-alpha
+  lambda.array[1]<-lambda
+  m.array[1]<-m
+  c.array[1]<-c
+  b1.array[1]<-b1
+  b2.array[1]<-b2
+  b0.array[1]<-b0
+  
+  ## MCMC Sample
+
+  for (i in 1:iteration){
+    ## calculate sigma
+    sigma.M[,i]<-get.sigma(sigma20,b0.array[i],b1.array[i],b2.array[i],Y, m.array[i],c.array[i])
+    #print(sigma.M[,i])
+    
+    ## calculate t
+    t.M[,i]<-update.t(Y, alpha.array[i], lambda.array[i],sqrt(sigma.M[,i]), m.array[i])
+    #print(t.M[,i])
+    
+    for (j in 1:tms){
+      alpha.array[i+1]<-update.alpha.MH(Y,alpha.array[i],ma,q,std,t.M[,i])
+    }
+    #alpha.array[i+1]<-alpha.array[i]
+   #print(alpha.array[i+1])
+    
+    ## update lambda
+  
+    lambda.array[i+1]<-update.lambda.MH(Y, lambda.array[i],t.M[,i],sqrt(sigma.M[,i]),m.array[i],Llow,Lup) 
+ 
+
+    bt<-sqrt(alpha.array[i+1]*(alpha.array[i+1]+1)/3) 
+   #print(bt)
+    ## update m
+  
+    m.array[i+1]<-update.m.MH(Y,alpha.array[i+1],lambda.array[i+1],bt,sigma20,b0.array[i],b1.array[i],b2.array[i],m.array[i],c.array[i])
+
+    #print(m.array[i+1])
+    
+    ## update c
+    c.array[i+1]<-update.c.MH(Y,alpha.array[i+1],lambda.array[i+1],bt,sigma20,b0.array[i],b1.array[i],b2.array[i], m.array[i+1],c.array[i])
+    #print(c.array[i+1])
+  
+    ## update b0
+    b0.array[i+1]<-update.b0.MH(Y,alpha.array[i+1],lambda.array[i+1],bt,sigma20,b0.array[i],b1.array[i],b2.array[i], m.array[i+1],c.array[i+1], sigma.b0)
+    #print(b0.array[i+1])
+    
+    ## update b1 and b2
+   b12t<-update.b12.MH(Y,alpha.array[i+1],lambda.array[i+1],bt,sigma20,b0.array[i+1],b1.array[i],b2.array[i],m.array[i+1],c.array[i+1])
+   #print(b1.array[i+1])
+   b1.array[i+1]<- b12t[1]
+   b2.array[i+1]<- b12t[2]
+    #print(b2.array[i+1])
+  }
+  return(list(sigma.M, alpha.array,lambda.array,m.array,c.array,b0.array,b1.array,b2.array))
+}
+
+test1<-MCMC.Garch(Y[1:190],alpha=2,lambda=0,ma=2,q=0.5,std=1,cb=2,d=0.5,Llow=-5,Lup=5,sigma20=0.1,sigma.b0=0.1,b0=0.005,b1=0.05,b2=0.9, m=mean(Y),c=0.5, 50000,1)
+
+plot(test1[[2]],type="l",ylab="alpha", xlab="Iteration")
+plot(test1[[3]],type="l",ylab="lambda", xlab="Iteration")
+plot(test1[[4]],type="l",ylab="m", xlab="Iteration")
+plot(test1[[5]],type="l",ylab="c", xlab="Iteration")
+plot(test1[[6]],type="l",ylab="b0", xlab="Iteration")
+plot(test1[[7]],type="l",ylab="b1", xlab="Iteration")
+plot(test1[[8]],type="l",ylab="b2", xlab="Iteration")
+
+
+geweke.diag(test1[[8]][5000:50000], frac1=0.1, frac2=0.5)
+
+quantile(test1[[5]][10000:50000],0.025)
+quantile(test1[[5]][10000:50000],0.975)
+
+hist(test1[[2]][2000:10000],breaks = 30,main="", xlab="Posterior sample - alpha")
+hist(test1[[3]][2000:10000],breaks = 30,main="", xlab="Posterior sample - lambda")
+hist(test1[[4]][2000:10000],breaks = 30,main="", xlab="Posterior sample - m")
+hist(test1[[5]][2000:10000],breaks = 30,main="", xlab="Posterior sample - c")
+hist(test1[[6]][2000:10000],breaks = 30,main="", xlab="Posterior sample - b0")
+hist(test1[[7]][2000:10000],breaks = 30,main="", xlab="Posterior sample - b1")
+hist(test1[[8]][2000:10000],breaks = 30,main="", xlab="Posterior sample - b2")
+
+
+alpha1<-mean(test1[[2]][5000:50000])
+lambda1<-mean(test1[[3]][5000:50000])
+m1<-mean(test1[[4]][5000:50000])
+c1<-mean(test1[[5]][5000:50000])
+b01<-mean(test1[[6]][5000:50000])
+b11<-mean(test1[[7]][5000:50000])
+b21<-mean(test1[[8]][5000:50000])
+sgm1<-mean(test1[[1]][190,5000:50000])
+
+get_pdf_predict_garch <- function(y, beta,alpha,lambda,sigma,m){
+  r<-pmax(-(y-m)/sigma*exp(lambda), (y-m)/sigma*exp(-lambda))
+  f_y <- beta/(cosh(lambda)*2*(alpha-1))*(1-pgamma(r, shape = alpha-1, rate = beta))
+  return(f_y)
+}
+
+
+bta<-sqrt(alpha1*(alpha1+1)/3) 
+sigma<-sqrt(b01+b11*sgm1+b21*(Y[190]-m1-c1*sgm1)^2)
+grid<-seq(-0.4, 0.4, by=0.01)
+fpredict<-get_pdf_predict_garch(grid, bta, alpha1, lambda1,sigma,m1)
+plot(grid,fpredict,type="l", xlab="y", ylab="prediction probability")
+abline(v=Y[191],col="red")
+
+abline(v=quantile(sample(grid, size=20000, prob = fpredict,replace = TRUE),0.025),lty=2)
+abline(v=quantile(sample(grid, size=20000, prob = fpredict,replace = TRUE),0.975),lty=2)
+
