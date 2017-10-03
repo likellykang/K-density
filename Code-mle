@@ -1,0 +1,173 @@
+install.packages("zipfR")
+install.packages("animation")
+library(base)
+library(truncdist)
+library(zipfR)
+library(animation)
+
+
+get_pdf <- function(y, beta, alpha, lambda){
+  r<-pmax(-y*exp(lambda), y*exp(-lambda))
+  f_y <- beta/(cosh(lambda)*2*(alpha-1))*(1-pgamma(r, shape = alpha-1, rate = beta))
+  return(f_y)
+}
+
+grid<-seq(-6, 6, by=0.1)
+f<-get_pdf(grid, 2, 3, 0)
+plot(grid, dnorm(grid, mean = 0, sd = 1, log = FALSE),type="l",xlab="y", ylab="pdf",main="Simulation Study")
+lines(grid, f, xlab="y", ylab="pdf",col="blue")
+legend('topright',c('MLE','Gibbs'),fill=c('red','blue'),cex=1,inset=0.05,text.width = 1)
+
+text(-5, 0.3,"lambda=-1",cex = .8)
+text(-5, 0.25,"a=3",cex = .8)
+text(-5, 0.2,"b=2",cex = .8)
+
+y<- sample(grid, size=100, prob = f,replace = TRUE)
+y<-y+0.01
+
+grid<-seq(-2, 6, by=0.1)
+f<-get_pdf(grid, 5.07, 7, 0.965)
+hist(y,freq = F,ylim = c(0,0.5),breaks = 30)
+
+## Calculate Gradient ########################################################
+
+get.ry<-function(y, lambda){
+  r<-pmax(-y*exp(lambda), y*exp(-lambda))
+  return(r)
+}
+
+get.ry.p<-function(y, lambda){
+  n<-length(y)
+  r<-numeric()
+  for (i in 1:n){
+    if (y[i] < 0){
+      r[i]<-(-y[i])*exp(lambda)
+    } else if (y[i] >= 0){
+      r[i]<-(-y[i])*exp(-lambda) 
+    }
+  }
+  return(r)
+}
+
+get.ry.pp<-function(y, lambda){
+  n<-length(y)
+  r<-numeric()
+  for (i in 1:n){
+    if (y[i] < 0){
+      r[i]<-(-y[i])*exp(lambda)
+    } else if (y[i] >= 0){
+      r[i]<-(y[i])*exp(-lambda) 
+    }
+  }
+  return(r)
+}
+  
+get.Gradient<-function(y,beta, alpha,lambda){
+  n<-length(y)
+  r<-get.ry(y, lambda)
+  dmb<-numeric()
+  dma<-numeric()
+  dml<-numeric()
+  
+  ## Grediant for beta ##
+  f3<-function(t){
+    t^(alpha-2)*log(t)*exp(-beta*t)
+  }
+  for(i in 1:n){
+    dmb[i]<-(Igamma(alpha, r[i]*beta, lower=FALSE)/(beta^(alpha)))/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))
+    dma[i]<-(integrate(f3, r[i], Inf)$value)/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1))) 
+    dml[i]<-(get.ry.p(y[i], lambda)*r[i]^(alpha-2)*exp(-beta*r[i]))/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))  
+
+  }
+  dbeta<-n*alpha/beta-sum(dmb)
+  dalpha<-n*log(beta)- n*digamma(alpha)+sum(dma)
+  dlambda<-n*(exp(-lambda)-exp(lambda))/((exp(lambda)+exp(-lambda)))- sum(dml)
+  return(c(dbeta,dalpha,dlambda))
+}
+
+
+get.Gradient(y,2, 3,1)
+## Calculate Hessian Matrix ########################################################
+
+get.Hessian <- function(y, beta,alpha,lambda){
+  n<-length(y)
+  r<-get.ry(y, lambda)
+  dmbb<-numeric()
+  dmba<-numeric()
+  dmbl<-numeric()
+  dmaa<-numeric()
+  dmal<-numeric()
+  dmll<-numeric()
+  f0<-function(t){
+    t^(alpha)*log(t)*exp(-beta*t)
+  }
+  f3<-function(t){
+    t^(alpha-2)*log(t)*exp(-beta*t)
+  }
+  f4<-function(t){
+    t^(alpha-1)*log(t)*exp(-beta*t)
+  }
+  f5<-function(t){
+    t^(alpha-2)*(log(t))^2*exp(-beta*t)
+  }
+  
+  
+  for(i in 1:n){
+    dmbb[i]<-((Igamma(alpha+1, r[i]*beta, lower=FALSE)/(beta^(alpha+1)))*((Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1))))-(Igamma(alpha, r[i]*beta, lower=FALSE)/(beta^(alpha)))^2)/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))^2
+    #print(dmbb[i])
+    
+    dmba[i]<-((Igamma(alpha, r[i]*beta, lower=FALSE)/(beta^(alpha)))*(integrate(f3, r[i], Inf)$value)-(integrate(f4, r[i], Inf)$value)*((Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))))/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))^2
+    #print(dmba[i])
+    
+      dmbl[i]<-(get.ry.p(y[i], lambda)*r[i]^(alpha-1)*exp(-beta*r[i])*(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1))) - get.ry.p(y[i], lambda)*r[i]^(alpha-2)*exp(-beta*r[i])*(Igamma(alpha, r[i]*beta, lower=FALSE)/(beta^(alpha))))/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))^2
+      #print(dmbl[i])
+      
+    dmaa[i]<-((integrate(f5, r[i], Inf)$value)*(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1))) - (integrate(f3, r[i], Inf)$value)^2)/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))^2
+    #print(dmaa[i])  
+    
+    dmll[i]<-(r[i]^(alpha-2)*exp(-beta*r[i])*(get.ry.pp(y[i], lambda)+(alpha-2)/r[i]*(get.ry.p(y[i], lambda))^2-beta*(get.ry.p(y[i], lambda))^2)*((Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1))))+((get.ry.p(y[i], lambda))*r[i]^(alpha-2)*exp(-beta*r[i]))^2)/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))^2 
+      #print(dmll[i])
+      
+      dmal[i]<-((-get.ry.p(y[i], lambda))*r[i]^(alpha-2)*log(r[i])*exp(-beta*r[i])*((Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1))))+(integrate(f3, r[i], Inf)$value)*get.ry.p(y[i], lambda)*r[i]^(alpha-2)*exp(-beta*r[i]))/(Igamma(alpha-1, r[i]*beta, lower=FALSE)/(beta^(alpha-1)))^2
+       #print(dmal[i])
+  }
+  beta.beta<-(-n*alpha)/beta^2+sum(dmbb)
+  beta.alpha<-  n/beta +sum(dmba)
+  beta.lambda<-sum(dmbl)
+  alpha.alpha<-(-n)*trigamma(alpha)+sum(dmaa)
+  alpha.lambda<-sum(dmal,na.rm=TRUE)
+  lambda.lambda<- (n*(exp(lambda)-exp(-lambda))^2-n*(exp(lambda)+exp(-lambda))^2)/((exp(lambda)+exp(-lambda))^2) -sum(dmll,na.rm=TRUE)
+  r1<-c(beta.beta,beta.alpha,beta.lambda)
+  r2<-c(beta.alpha,alpha.alpha,alpha.lambda)
+  r3<-c(beta.lambda,alpha.lambda,lambda.lambda)
+  H<-rbind(r1,r2,r3)
+  return(H)
+}
+
+GetMLE<-function( initial.value, y,iteration,tol){
+  n<-length(y)
+  Matrix.theta<-matrix(0, 3, iteration+1)
+  Matrix.theta[,1]<-initial.value
+  H<-matrix(0, 3,3)
+  #step<-matrix(c(0.1,0.1,0.1), nrow=1, ncol=3)
+  for (i in 1:iteration){
+    g<-get.Gradient(y,Matrix.theta[1,i], Matrix.theta[2,i], Matrix.theta[3,i])
+    #print(g)
+    H<-get.Hessian(y,Matrix.theta[1,i], Matrix.theta[2,i], Matrix.theta[3,i])
+    #print(H)
+    Matrix.theta[,i+1]<-Matrix.theta[,i] - solve(H)%*%g
+    if(max(abs(Matrix.theta[,i+1] - Matrix.theta[,i])) < tol){
+      return(Matrix.theta[,i+1])
+    }
+    #print(Matrix.theta[,i+1])
+    return(H)
+  }
+  #print('Newton-Raphson failed to converge')
+  print(H)
+  return(H)
+}
+
+
+
+test<-GetMLE(c(2,3,0.2),y,10,0.01)
+
